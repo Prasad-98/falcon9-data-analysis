@@ -1,0 +1,211 @@
+import logging
+from pathlib import Path
+from typing import Set
+
+import numpy as np
+import pandas as pd
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+
+class SpaceXDataProcessor:
+    """
+    Process and clean SpaceX launch data from a CSV file.
+
+    The processor handles missing value imputation, calculates key metrics,
+    creates a new classification column for landing outcomes, and performs
+    one-hot encoding on selected categorical features.
+    """
+
+    def __init__(self, input_csv: str, cleaned_csv: str,
+                 encoded_csv: str) -> None:
+        """
+        Initialize the data processor with file paths.
+
+        Args:
+            input_csv (str): Path to the raw CSV file.
+            cleaned_csv (str): Path where the cleaned CSV will be saved.
+            encoded_csv (str): Path where the one-hot encoded CSV will be saved.
+        """
+        self.input_csv: Path = Path(input_csv)
+        self.cleaned_csv: Path = Path(cleaned_csv)
+        self.encoded_csv: Path = Path(encoded_csv)
+        self.df: pd.DataFrame = pd.DataFrame()
+
+    def load_data(self) -> None:
+        """Load the dataset from the CSV file."""
+        try:
+            self.df = pd.read_csv(self.input_csv)
+            logging.info("Data loaded from %s", self.input_csv)
+        except Exception as error:
+            logging.error("Failed to load data: %s", error)
+            raise
+
+    def report_missing_values(self) -> None:
+        """
+        Identify and log the percentage of missing values per attribute.
+
+        The percentages are logged at INFO level.
+        """
+        missing_values = self.df.isnull().sum() / self.df.shape[0] * 100
+        logging.info("Missing Values (%%):\n%s", missing_values)
+
+    def fill_missing_values(self) -> None:
+        """
+        Fill missing values in the dataset.
+
+        - For numerical columns, fill NaN with the median value.
+        - For categorical columns, fill NaN with the mode.
+        """
+        # Fill numeric missing values with median
+        numeric_cols = self.df.select_dtypes(include=[np.number]).columns
+        self.df[numeric_cols] = self.df[numeric_cols].fillna(
+            self.df[numeric_cols].median(numeric_only=True)
+        )
+
+        # Fill categorical missing values with mode
+        categorical_cols = self.df.select_dtypes(include=['object']).columns
+        for col in categorical_cols:
+            if not self.df[col].empty:
+                self.df[col].fillna(self.df[col].mode()[0], inplace=True)
+        logging.info("Missing values filled.")
+
+    def print_value_counts(self) -> None:
+        """Print value counts for key categorical features."""
+        if 'LaunchSite' in self.df.columns:
+            logging.info("Launch Site Counts:\n%s", self.df['LaunchSite'].value_counts())
+        if 'Orbit' in self.df.columns:
+            logging.info("Orbit Counts:\n%s", self.df['Orbit'].value_counts())
+
+    def analyze_landing_outcomes(self) -> None:
+        """
+        Analyze and log the landing outcomes.
+
+        The outcomes are printed with an index for clarity.
+        """
+        if 'Outcome' not in self.df.columns:
+            logging.error("Column 'Outcome' not found in data.")
+            return
+
+        landing_outcomes = self.df['Outcome'].value_counts()
+        for index, outcome in enumerate(landing_outcomes.index):
+            logging.info("%d: %s", index, outcome)
+
+    @staticmethod
+    def get_bad_outcomes() -> Set[str]:
+        """
+        Define a set of bad outcomes for unsuccessful landings.
+
+        Returns:
+            Set[str]: A set of outcomes representing unsuccessful landings.
+        """
+        return {'None ASDS', 'False Ocean', 'False RTLS', 'False ASDS', 'None None'}
+
+    def create_class_column(self) -> None:
+        """
+        Create a binary 'Class' column indicating landing success.
+
+        A value of 1 indicates a successful landing and 0 indicates failure.
+        """
+        bad_outcomes = self.get_bad_outcomes()
+        if 'Outcome' not in self.df.columns:
+            logging.error("Column 'Outcome' not found in data.")
+            return
+
+        self.df['Class'] = self.df['Outcome'].apply(
+            lambda outcome: 0 if outcome in bad_outcomes else 1
+        )
+        logging.info("Class column created based on landing outcomes.")
+
+    def save_cleaned_data(self) -> None:
+        """
+        Save the cleaned dataset to a CSV file.
+        
+        The cleaned CSV is saved at the path provided during initialization.
+        """
+        try:
+            self.df.to_csv(self.cleaned_csv, index=False)
+            logging.info("Cleaned dataset saved at: %s", self.cleaned_csv)
+        except Exception as error:
+            logging.error("Error saving cleaned dataset: %s", error)
+            raise
+
+    def print_success_rate(self) -> None:
+        """
+        Calculate and log the success rate of the landings.
+        
+        The success rate is the mean of the 'Class' column.
+        """
+        if 'Class' in self.df.columns:
+            success_rate = round(self.df['Class'].mean() * 100, 2)
+            logging.info("Success rate: %s%%", success_rate)
+        else:
+            logging.error("Column 'Class' not found to calculate success rate.")
+
+    def perform_one_hot_encoding(self) -> pd.DataFrame:
+        """
+        Select features and perform one-hot encoding on categorical features.
+
+        Returns:
+            pd.DataFrame: The DataFrame after one-hot encoding.
+        """
+        # Select key features for encoding
+        selected_columns = [
+            'FlightNumber', 'PayloadMass', 'Orbit', 'LaunchSite', 'Flights',
+            'GridFins', 'Reused', 'Legs', 'LandingPad', 'Block', 'ReusedCount', 'Serial'
+        ]
+        features = self.df[selected_columns].copy()
+
+        # One-hot encode specific categorical features
+        categorical_features = ['Orbit', 'LaunchSite', 'LandingPad', 'Serial']
+        features_encoded = pd.get_dummies(features, columns=categorical_features)
+
+        # Ensure all numeric columns are of type float64
+        features_encoded = features_encoded.astype(np.float64)
+        logging.info("One-hot encoding completed.")
+        return features_encoded
+
+    def save_encoded_data(self, features_encoded: pd.DataFrame) -> None:
+        """
+        Save the one-hot encoded dataset to a CSV file.
+
+        Args:
+            features_encoded (pd.DataFrame): The encoded DataFrame.
+        """
+        try:
+            features_encoded.to_csv(self.encoded_csv, index=False)
+            logging.info("Encoded dataset saved at: %s", self.encoded_csv)
+        except Exception as error:
+            logging.error("Error saving encoded dataset: %s", error)
+            raise
+
+    def process(self) -> None:
+        """Orchestrate the data processing pipeline."""
+        self.load_data()
+        self.report_missing_values()
+        self.fill_missing_values()
+        self.print_value_counts()
+        self.analyze_landing_outcomes()
+        self.create_class_column()
+        self.save_cleaned_data()
+        self.print_success_rate()
+        features_encoded = self.perform_one_hot_encoding()
+        self.save_encoded_data(features_encoded)
+        logging.info("Data processing complete.")
+        logging.info("First few rows of processed data:\n%s",
+                     features_encoded.head())
+
+
+def main() -> None:
+    """Main function to run the SpaceX data processing pipeline."""
+    input_csv = "C:\\Users\\daiva\\AIML_work\\SpaceX_API_data.csv"
+    cleaned_csv = "C:\\Users\\daiva\\AIML_work\\falcon9_launches_cleaned.csv"
+    encoded_csv = "dataset_part_3.csv"
+
+    processor = SpaceXDataProcessor(input_csv, cleaned_csv, encoded_csv)
+    processor.process()
+
+
+if __name__ == "__main__":
+    main()
